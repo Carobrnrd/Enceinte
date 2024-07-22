@@ -11,6 +11,7 @@
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "driver/gpio.h"
 
 #include "esp_log.h"
 #include "esp_peripherals.h"
@@ -45,7 +46,7 @@
 #define HFP_RESAMPLE_RATE 8000
 #endif
 
-static const char *TAG = "BLUETOOTH_EXAMPLE";
+static const char *TAG = "BluetoothControl";
 static const char *BT_HF_TAG = "BT_HF";
 
 static audio_element_handle_t  raw_read, bt_stream_reader, i2s_stream_writer, i2s_stream_reader;
@@ -512,17 +513,223 @@ void app_main(void)
             if ((int) msg.data == get_input_play_id()) {
                 ESP_LOGI(TAG, "[ * ] [Play] touch tap event");
                 periph_bluetooth_play(bt_periph);
-            } else if ((int) msg.data == get_input_set_id()) {
-                ESP_LOGI(TAG, "[ * ] [Set] touch tap event");
-                periph_bluetooth_pause(bt_periph);
-            } else if ((int) msg.data == get_input_volup_id()) {
-                ESP_LOGI(TAG, "[ * ] [Vol+] touch tap event");
-                periph_bluetooth_next(bt_periph);
-            } else if ((int) msg.data == get_input_voldown_id()) {
-                ESP_LOGI(TAG, "[ * ] [Vol-] touch tap event");
-                periph_bluetooth_prev(bt_periph);
             }
         }
+
+#define PERIPH_ID_TOUCH 1
+#define PERIPH_ID_BUTTON 2
+#define PERIPH_ID_ADC_BTN 3
+
+// Commandes des périphériques (à adapter selon votre configuration)
+#define PERIPH_TOUCH_TAP 1
+#define PERIPH_BUTTON_PRESSED 2
+#define PERIPH_ADC_BUTTON_PRESSED 3
+
+bool isPlaying = false; // État de lecture, false = pause, true = play
+
+void playMusic() {
+    ESP_LOGI(TAG, "[ * ] [Play] touch tap event");
+                periph_bluetooth_play(bt_periph// Fonction pour démarrer la lecture
+    printf("Playing music\n");
+}
+
+void pauseMusic() {
+      ESP_LOGI(TAG, "[ * ] [PLAY] touch tap event");
+                periph_bluetooth_pause(bt_periph) // Fonction pour mettre en pause
+    printf("Pausing music\n");
+}
+
+// Fonction de gestion des messages
+void handleMessage(msg_t msg) {
+    if ((msg.source_type == PERIPH_ID_TOUCH || msg.source_type == PERIPH_ID_BUTTON || msg.source_type == PERIPH_ID_ADC_BTN)
+        && (msg.cmd == PERIPH_TOUCH_TAP || msg.cmd == PERIPH_BUTTON_PRESSED || msg.cmd == PERIPH_ADC_BUTTON_PRESSED)) {
+        
+        // Inverser l'état de lecture
+        isPlaying = !isPlaying;
+        if (isPlaying) {
+            playMusic();
+        } else {
+            pauseMusic();
+        }
+    }
+}
+
+bool isPlaying = false; // État de lecture, false = pause, true = play
+bool bluetoothEnabled = false; // État Bluetooth
+int buttonState = 0;
+int lastButtonState = 0;
+int64_t buttonPressTime = 0;
+esp_timer_handle_t bluetoothTimer;
+
+// Callback de l'A2DP pour la gestion de l'audio
+void bt_app_a2d_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param) {
+    switch (event) {
+        case ESP_A2D_CONNECTION_STATE_EVT:
+            if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
+                ESP_LOGI(TAG, "Bluetooth Disconnected");
+            } else if (param->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
+                ESP_LOGI(TAG, "Bluetooth Connected");
+            }
+            break;
+        case ESP_A2D_AUDIO_STATE_EVT:
+            if (param->audio_stat.state == ESP_A2D_AUDIO_STATE_STARTED) {
+                ESP_LOGI(TAG, "Bluetooth Audio Started");
+            } else if (param->audio_stat.state == ESP_A2D_AUDIO_STATE_STOPPED) {
+                ESP_LOGI(TAG, "Bluetooth Audio Stopped");
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+// Callback AVRCP pour la gestion des commandes
+void bt_app_rc_ct_cb(esp_avrc_ct_cb_event_t event, esp_avrc_ct_cb_param_t *param) {
+    switch (event) {
+        case ESP_AVRC_CT_METADATA_RSP_EVT:
+            ESP_LOGI(TAG, "AVRCP Metadata response received");
+            break;
+        case ESP_AVRC_CT_CONNECTION_STATE_EVT:
+            if (param->conn_stat.connected) {
+                ESP_LOGI(TAG, "AVRCP Controller Connected");
+            } else {
+                ESP_LOGI(TAG, "AVRCP Controller Disconnected");
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+// Fonction de lecture de musique
+void playMusic() {
+    printf("Playing music\n");
+    // Ajoutez ici votre fonction pour démarrer la lecture
+}
+
+// Fonction de pause de musique
+void pauseMusic() {
+    printf("Pausing music\n");
+    // Ajoutez ici votre fonction pour mettre en pause
+}
+
+// Fonction de démarrage de la recherche Bluetooth
+void startBluetoothSearch() {
+    if (!bluetoothEnabled) {
+        printf("Starting Bluetooth search...\n");
+
+        esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+        esp_bt_controller_init(&bt_cfg);
+        esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
+        esp_bluedroid_init();
+        esp_bluedroid_enable();
+
+        esp_a2d_register_callback(&bt_app_a2d_cb);
+        esp_a2d_sink_register_data_callback(NULL);
+        esp_a2d_sink_init();
+
+        esp_avrc_ct_init();
+        esp_avrc_ct_register_callback(bt_app_rc_ct_cb);
+
+        bluetoothEnabled = true;
+    }
+    // Réinitialiser le temporisateur d'inactivité
+    esp_timer_stop(bluetoothTimer);
+    esp_timer_start_once(bluetoothTimer, BLUETOOTH_INACTIVITY_TIMEOUT_MS);
+}
+
+// Fonction d'arrêt du Bluetooth
+void stopBluetooth() {
+    if (bluetoothEnabled) {
+        printf("Stopping Bluetooth due to inactivity.\n");
+        esp_a2d_sink_deinit();
+        esp_avrc_ct_deinit();
+        esp_bluedroid_disable();
+        esp_bluedroid_deinit();
+        esp_bt_controller_disable();
+        esp_bt_controller_deinit();
+        bluetoothEnabled = false;
+    }
+}
+
+// Fonction de gestion des messages
+void handleMessage(msg_t msg) {
+    if ((msg.source_type == PERIPH_ID_TOUCH || msg.source_type == PERIPH_ID_BUTTON || msg.source_type == PERIPH_ID_ADC_BTN)
+        && (msg.cmd == PERIPH_TOUCH_TAP || msg.cmd == PERIPH_BUTTON_PRESSED || msg.cmd == PERIPH_ADC_BUTTON_PRESSED)) {
+        
+        isPlaying = !isPlaying;
+        if (isPlaying) {
+            playMusic();
+        } else {
+            pauseMusic();
+        }
+    }
+}
+
+// Fonction principale de l'application
+void app_main() {
+    // Configuration de la broche du bouton en entrée
+    gpio_config_t io_conf;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pin_bit_mask = (1ULL << PLAY_PAUSE_BUTTON_PIN);
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    gpio_config(&io_conf);
+
+    // Configurer le temporisateur d'inactivité Bluetooth
+    const esp_timer_create_args_t bluetooth_timer_args = {
+        .callback = &stopBluetooth,
+        .name = "bluetooth_timer"
+    };
+    esp_timer_create(&bluetooth_timer_args, &bluetoothTimer);
+
+    while (1) {
+        buttonState = gpio_get_level(PLAY_PAUSE_BUTTON_PIN);
+
+        if (buttonState != lastButtonState) {
+            if (buttonState == 1) {
+                buttonPressTime = esp_timer_get_time() / 1000;
+            } else {
+                int64_t pressDuration = (esp_timer_get_time() / 1000) - buttonPressTime;
+                if (pressDuration >= BUTTON_HOLD_TIME_MS) {
+                    startBluetoothSearch();
+                } else {
+                    // Gérer la lecture/pause ici si nécessaire
+                    isPlaying = !isPlaying;
+                    if (isPlaying) {
+                        playMusic();
+                    } else {
+                        pauseMusic();
+                    }
+                }
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+
+        lastButtonState = buttonState;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+void app_main() {
+    // Configuration initiale de vos périphériques, si nécessaire
+
+    // Boucle principale pour traiter les messages
+    while (1) {
+        msg_t msg;
+
+        // Attendez la réception d'un message (cette partie doit être implémentée selon votre système de message)
+        // Exemple : msg = waitForMessage();
+
+        // Gérer le message reçu
+        handleMessage(msg);
+
+        // Petite pause pour libérer le CPU
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
 
         /* Stop when the Bluetooth is disconnected or suspended */
         if (msg.source_type == PERIPH_ID_BLUETOOTH
